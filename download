@@ -1,0 +1,86 @@
+"""
+generate_data.py
+────────────────
+Generates a realistic M5-style Walmart retail sales dataset.
+Simulates 5 product categories across 3 stores with:
+  - Weekly seasonality (weekend spikes)
+  - Annual seasonality (holiday peaks)
+  - Long-term trend (slight growth)
+  - Promotional lift events
+  - Zero-inflated demand (stockouts / no sales days)
+
+Output: data/m5_sample.csv
+"""
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+np.random.seed(2024)
+
+STORES   = ["CA_1", "TX_1", "WI_1"]
+CATS     = ["FOODS", "HOBBIES", "HOUSEHOLD", "SNAP_FOODS", "CLOTHING"]
+START    = "2019-01-01"
+END      = "2023-12-31"
+
+
+def make_series(store: str, category: str, dates: pd.DatetimeIndex) -> pd.Series:
+    n = len(dates)
+    t = np.arange(n)
+
+    # Base level per category
+    base = {"FOODS": 120, "HOBBIES": 45, "HOUSEHOLD": 80, "SNAP_FOODS": 60, "CLOTHING": 30}[category]
+
+    # Trend
+    trend = base + 0.015 * t
+
+    # Weekly seasonality (Fri/Sat/Sun up)
+    dow = dates.dayofweek
+    weekly = np.where(dow >= 4, base * 0.25, np.where(dow == 0, base * -0.10, 0))
+
+    # Annual seasonality (Nov–Dec holiday season)
+    annual = base * 0.30 * np.sin(2 * np.pi * (t - 270) / 365)
+
+    # Random promotional events (~8 per year)
+    promo = np.zeros(n)
+    n_promos = int(n / 365 * 8)
+    promo_idx = np.random.choice(n, n_promos, replace=False)
+    promo_lengths = np.random.randint(3, 8, n_promos)
+    for idx, length in zip(promo_idx, promo_lengths):
+        promo[idx:idx+length] += base * np.random.uniform(0.15, 0.40)
+
+    # Noise
+    noise = np.random.normal(0, base * 0.12, n)
+
+    sales = trend + weekly + annual + promo + noise
+    sales = np.maximum(0, sales).round().astype(int)
+
+    # Zero-inflate (~5% stockout days)
+    zero_mask = np.random.random(n) < 0.05
+    sales[zero_mask] = 0
+
+    return pd.Series(sales, index=dates, name="sales")
+
+
+def generate(out_path: str = "data/m5_sample.csv"):
+    dates = pd.date_range(START, END, freq="D")
+    records = []
+
+    for store in STORES:
+        for cat in CATS:
+            s = make_series(store, cat, dates)
+            df_tmp = s.reset_index()
+            df_tmp.columns = ["date", "sales"]
+            df_tmp["store_id"]    = store
+            df_tmp["category_id"] = cat
+            records.append(df_tmp)
+
+    df = pd.concat(records, ignore_index=True)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+    print(f"[✓] Generated {len(df):,} rows → {out_path}")
+    return df
+
+
+if __name__ == "__main__":
+    generate()
